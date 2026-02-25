@@ -12,9 +12,7 @@ Guild lets you define a **team of agents** — each with a role, a skill set, an
 
 ```toml
 # team.toml — the whole team in ~50 lines
-[agents]
-library = "~/agent-library"
-use = ["metaswarm/agents/architect", "metaswarm/agents/coder", ...]
+agents_dir = "~/agent-library/metaswarm/agents"
 
 [[phases]]
 name  = "plan"

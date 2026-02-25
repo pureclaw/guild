@@ -137,19 +137,18 @@ Agents live in a directory — call it an *agent library*. Each agent is a subdi
       SOUL.md
 ```
 
-The team config references agents by path relative to the library:
+The team config points `agents_dir` at the directory containing agent subdirectories. Each phase references an agent by name, resolved as `<agents_dir>/<name>/`:
 
 ```yaml
-agents_dir: ~/agent-library
+agents_dir: ~/agent-library/metaswarm/agents
 
 team:
-  - metaswarm/agents/architect
-  - metaswarm/agents/coder
-  - metaswarm/agents/adversarial_reviewer
-  - custom/risk_assessor
+  - architect
+  - coder
+  - adversarial_reviewer
 ```
 
-You can clone the MetaSwarm repository, point `agents_dir` at it, and immediately use those agents. No reformatting, no reimporting. Copy, point, run.
+You can clone the MetaSwarm repository, point `agents_dir` at its agents directory, and immediately use those agents. No reformatting, no reimporting. Copy, point, run.
 
 ### The Canonical Agent Format
 
@@ -211,20 +210,8 @@ The team config is the glue between the agent library and the runtime. It is int
 name: software-dev-team
 description: MetaSwarm software development workflow
 
-# Where to find agent definitions
-agents_dir: ~/agent-library
-
-# Which agents are on this team
-agents:
-  - id: architect
-    path: metaswarm/agents/architect
-  - id: coder
-    path: metaswarm/agents/coder
-  - id: adversarial_reviewer
-    path: metaswarm/agents/adversarial_reviewer
-    fresh_instance: true        # spawn with zero prior context each invocation
-  - id: pr_shepherd
-    path: metaswarm/agents/pr_shepherd
+# Where to find agent definitions — each agent is a subdirectory here
+agents_dir: ~/agent-library/metaswarm/agents
 
 # The workflow: states and transitions
 workflow:
@@ -499,7 +486,6 @@ CLAUDE.md                          ← project instructions for Claude Code
   hooks/
   knowledge/
 .metaswarm/project-profile.json
-.coverage-thresholds.json
 SERVICE-INVENTORY.md
 ```
 
@@ -512,17 +498,7 @@ SERVICE-INVENTORY.md
 name = "dojolens"
 description = "Judo video analytics SaaS"
 
-[agents]
-library = "~/agent-library"        # path to agent definitions on disk
-use = [
-  "metaswarm/agents/architect",
-  "metaswarm/agents/coder",
-  "metaswarm/agents/adversarial_reviewer",
-  "metaswarm/agents/pr_shepherd",
-  "metaswarm/agents/feasibility_reviewer",
-  "metaswarm/agents/completeness_reviewer",
-  "metaswarm/agents/scope_reviewer",
-]
+agents_dir = "~/agent-library/metaswarm/agents"
 
 [[phases]]
 name = "research"
@@ -557,12 +533,6 @@ name = "review_passed"
 type = "predicate"
 expr = "output.verdict == 'PASS'"
 
-[build]
-test = "npm test"
-lint = "npm run lint"
-typecheck = "npx tsc --noEmit"
-coverage = "npm run test:coverage"
-coverage_threshold = 100
 ```
 
 ~50 lines. Describes the full MetaSwarm software dev team. Compare to the hundreds of files MetaSwarm installs.
@@ -579,13 +549,12 @@ guild init team.toml --output ./my-project
 
 Step by step:
 1. **Parse** `team.toml`
-2. **Load** each agent definition from `agents.library` + the path in `agents.use`
+2. **Load** each agent definition from `agents_dir/<name>/`
 3. **Copy** agent skill files into `.claude/plugins/guild/skills/<agent-name>/`
 4. **Generate** `.claude/commands/` — one slash command per pipeline phase, auto-generated from phase definition and agent's skill description
 5. **Generate** `CLAUDE.md` — lists the team, commands table, gates, build commands; no hardcoded MetaSwarm references
 6. **Write** `.beads/config.yaml` and standard hooks
-7. **Write** `.coverage-thresholds.json` from `[build]` settings
-8. **Write** `.agentic/team.toml` — records the spec used (for future `guild update` and drift detection)
+7. **Write** `.agentic/team.toml` — records the spec used (for future `guild update` and drift detection)
 
 ### The Generated CLAUDE.md (example)
 

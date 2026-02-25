@@ -7,28 +7,10 @@
 name    = "metaswarm-full"
 description = "Full 9-phase software development workflow with adversarial review gates"
 
-[agents]
-# Path to the agent library on disk. Can be an absolute path or ~ expansion.
+# Path to the agents directory on disk. Each phase resolves its agent name
+# as a subdirectory here: <agents_dir>/<agent_name>/
 # Clone metaswarm and point here: git clone https://github.com/dsifry/metaswarm
-library = "./meta-metaswarm/examples/metaswarm-full"
-
-use = [
-  "agents/researcher",
-  "agents/architect",
-  "agents/architect_reviewer",
-  "agents/coder",
-  "agents/adversarial_reviewer",
-  "agents/code_reviewer",
-  "agents/feasibility_reviewer",
-  "agents/completeness_reviewer",
-  "agents/scope_reviewer",
-  "agents/product_manager",
-  "agents/designer",
-  "agents/security_design",
-  "agents/cto",
-  "agents/pr_shepherd",
-  "agents/knowledge_curator",
-]
+agents_dir = "./examples/metaswarm-full/agents"
 
 # ---------------------------------------------------------------------------
 # Pipeline phases — maps to the 9-phase MetaSwarm workflow
@@ -97,22 +79,22 @@ expr    = "all(r.verdict == 'APPROVED' for r in output.reviews)"
 [[gates]]
 name    = "tests_pass"
 type    = "shell"
-command = "${build.test}"
+command = "npm test"
 
 [[gates]]
 name    = "type_check"
 type    = "shell"
-command = "${build.typecheck}"
+command = "npx tsc --noEmit"
 
 [[gates]]
 name    = "lint_pass"
 type    = "shell"
-command = "${build.lint}"
+command = "npm run lint"
 
 [[gates]]
 name    = "coverage_met"
 type    = "shell"
-command = "${build.coverage}"
+command = "npm run test:coverage"
 
 [[gates]]
 name    = "file_scope_respected"
@@ -140,14 +122,3 @@ description = "Approve design before implementation. All 5 specialist reviewers 
 after       = "pr_shepherd"
 description = "Final merge approval. PR passed CI, all review threads resolved."
 
-# ---------------------------------------------------------------------------
-# Build configuration — used to generate coverage-thresholds.json and
-# fill ${build.*} references in gate commands
-# ---------------------------------------------------------------------------
-
-[build]
-test               = "npm test"
-lint               = "npm run lint"
-typecheck          = "npx tsc --noEmit"
-coverage           = "npm run test:coverage"
-coverage_threshold = 100
