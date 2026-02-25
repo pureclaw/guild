@@ -1,0 +1,45 @@
+cabal-version:      3.0
+name:               guild
+version:            0.1.0.0
+synopsis:           Agent team orchestration framework — spec compiler
+description:
+  Guild reads a compact TOML team spec and generates Claude Code project
+  scaffolding: CLAUDE.md, slash commands, agent skills, beads config.
+  Milestone 1 is a scaffolding generator, not a runtime.
+license:            MIT
+author:             Zoe
+build-type:         Simple
+
+common warnings
+    ghc-options: -Wall -Wno-unused-do-bind
+
+library
+    import:           warnings
+    exposed-modules:
+        Guild.Types
+        Guild.Parser
+        Guild.Resolver
+        Guild.Generator
+    build-depends:
+        base          >= 4.18 && < 5,
+        text          >= 2.0,
+        toml-parser   >= 2.0.0.0,
+        containers    >= 0.6,
+        filepath      >= 1.4,
+        directory     >= 1.3,
+        bytestring    >= 0.11
+    hs-source-dirs:   src
+    default-language: GHC2021
+
+executable guild
+    import:           warnings
+    main-is:          Main.hs
+    build-depends:
+        base          >= 4.18 && < 5,
+        guild,
+        text          >= 2.0,
+        filepath      >= 1.4,
+        directory     >= 1.3,
+        optparse-applicative >= 0.18
+    hs-source-dirs:   app
+    default-language: GHC2021

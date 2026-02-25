@@ -50,11 +50,72 @@ In Guild, an **agent is a directory on disk** — a `SOUL.md` (system prompt) an
     config.yaml
 ```
 
+## Usage
+
+### Prerequisites
+
+- GHC 9.6+ and Cabal 3.10+ (install via [GHCup](https://www.haskell.org/ghcup/))
+- Or Nix (use the included `flake.nix`)
+
+### Build
+
+```bash
+cabal build
+```
+
+Or with Nix:
+
+```bash
+nix build
+```
+
+### Initialize a project
+
+```bash
+# Scaffold from a team spec (writes to current directory)
+guild init team.toml
+
+# Scaffold into a specific directory
+guild init team.toml --output ./my-project
+```
+
+This reads the TOML team spec and generates:
+
+| Output | Description |
+|---|---|
+| `CLAUDE.md` | Project instructions — pipeline diagram, commands table, agents, gates, build |
+| `.claude/commands/*.md` | One slash command per pipeline phase |
+| `.claude/plugins/guild/skills/<agent>/` | Agent skill files copied from the agent library |
+| `.beads/` | Knowledge system config and hooks |
+| `.agentic/team.toml` | Copy of the spec (for drift detection) |
+| `.coverage-thresholds.json` | Coverage thresholds from `[build]` section |
+
+### Example
+
+```bash
+guild init examples/metaswarm-full.toml --output /tmp/my-project
+```
+
+See [examples/metaswarm-full.toml](examples/metaswarm-full.toml) for the full MetaSwarm 9-phase pipeline spec.
+
+## Project Structure
+
+```
+guild.cabal              Cabal project file
+flake.nix                Nix flake for reproducible builds
+src/Guild/Types.hs       Core data types + TOML FromValue instances
+src/Guild/Parser.hs      TOML parsing
+src/Guild/Resolver.hs    Agent library path resolution
+src/Guild/Generator.hs   File generation (CLAUDE.md, commands, skills, beads)
+app/Main.hs              CLI entry point (optparse-applicative)
+examples/                Example team specs
+```
+
 ## Status
 
-Early design phase. See [DESIGN.md](DESIGN.md) for full architecture.
+**Milestone 1 (complete):** `guild init team.toml` — spec compiler that generates Claude Code project scaffolding. No runtime yet.
 
-**Milestone 1 (in progress):** `guild init team.toml` → generates Claude Code project scaffolding equivalent to `npx metaswarm install`. No runtime yet — just the spec compiler.
+See [DESIGN.md](DESIGN.md) for full architecture and roadmap.
 
 ## Design
 

@@ -3,3 +3,4 @@ dist-newstyle/
 *.hi
 *.o
 .agentic/
+.guild-task.md
