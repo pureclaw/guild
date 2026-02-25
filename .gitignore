@@ -4,3 +4,4 @@ dist-newstyle/
 *.o
 .agentic/
 .guild-task.md
+result

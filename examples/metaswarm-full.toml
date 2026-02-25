@@ -3,14 +3,14 @@
 # This is the Phase 0 test case: guild init metaswarm-full.toml
 # should produce output equivalent to npx metaswarm install.
 
-[project]
-name    = "metaswarm-full"
-description = "Full 9-phase software development workflow with adversarial review gates"
-
 # Path to the agents directory on disk. Each phase resolves its agent name
 # as a subdirectory here: <agents_dir>/<agent_name>/
 # Clone metaswarm and point here: git clone https://github.com/dsifry/metaswarm
 agents_dir = "./examples/metaswarm-full/agents"
+
+[project]
+name    = "metaswarm-full"
+description = "Full 9-phase software development workflow with adversarial review gates"
 
 # ---------------------------------------------------------------------------
 # Pipeline phases — maps to the 9-phase MetaSwarm workflow

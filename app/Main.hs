@@ -4,7 +4,7 @@ import Options.Applicative
 import System.Directory (makeAbsolute, getCurrentDirectory, createDirectoryIfMissing)
 import System.FilePath (takeDirectory)
 
-import Guild.Types (TeamSpec(..), AgentsConfig(..))
+import Guild.Types (TeamSpec(..))
 import Guild.Parser (parseTeamSpec)
 import Guild.Resolver (resolveAgents)
 import Guild.Generator (generateProject)
@@ -70,8 +70,8 @@ runInit specPath mOutput = do
       putStrLn "Error parsing team spec:"
       putStrLn err
     Right spec -> do
-      putStrLn $ "Resolving agents from " ++ acLibrary (tsAgents spec) ++ " ..."
-      agentResult <- resolveAgents specDir (tsAgents spec)
+      putStrLn $ "Resolving agents from " ++ tsAgentsDir spec ++ " ..."
+      agentResult <- resolveAgents specDir (tsAgentsDir spec) (tsPhases spec)
       case agentResult of
         Left err -> do
           putStrLn "Error resolving agents:"

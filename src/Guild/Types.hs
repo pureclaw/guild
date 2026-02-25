@@ -3,7 +3,6 @@
 module Guild.Types
   ( TeamSpec(..)
   , ProjectConfig(..)
-  , AgentsConfig(..)
   , Phase(..)
   , Gate(..)
   , Checkpoint(..)
@@ -18,7 +17,7 @@ import Toml.Schema
 -- | Top-level parsed TOML team spec.
 data TeamSpec = TeamSpec
   { tsProject     :: ProjectConfig
-  , tsAgents      :: AgentsConfig
+  , tsAgentsDir   :: FilePath        -- ^ path to agent library on disk
   , tsPhases      :: [Phase]
   , tsGates       :: [Gate]
   , tsCheckpoints :: [Checkpoint]
@@ -28,11 +27,6 @@ data TeamSpec = TeamSpec
 data ProjectConfig = ProjectConfig
   { pcName        :: Text
   , pcDescription :: Text
-  } deriving (Show)
-
-data AgentsConfig = AgentsConfig
-  { acLibrary :: FilePath
-  , acUse     :: [Text]
   } deriving (Show)
 
 -- | A pipeline phase. Either single-agent or multi-agent.
@@ -81,14 +75,14 @@ data AgentRef = AgentRef
 instance FromValue TeamSpec where
   fromValue = parseTableFromValue $ do
     project     <- reqKey "project"
-    agents      <- reqKey "agents"
+    agentsDir   <- reqKey "agents_dir"
     phases      <- reqKeyOf "phases" (listOf (\_ v -> fromValue v))
     gates       <- optKeyOf "gates" (listOf (\_ v -> fromValue v))
     checkpoints <- optKeyOf "checkpoints" (listOf (\_ v -> fromValue v))
     build       <- optKey "build"
     pure TeamSpec
       { tsProject     = project
-      , tsAgents      = agents
+      , tsAgentsDir   = T.unpack agentsDir
       , tsPhases      = phases
       , tsGates       = maybe [] id gates
       , tsCheckpoints = maybe [] id checkpoints
@@ -102,15 +96,6 @@ instance FromValue ProjectConfig where
     pure ProjectConfig
       { pcName = name
       , pcDescription = desc
-      }
-
-instance FromValue AgentsConfig where
-  fromValue = parseTableFromValue $ do
-    lib <- reqKey "library"
-    use <- reqKeyOf "use" (listOf (\_ v -> fromValue v))
-    pure AgentsConfig
-      { acLibrary = T.unpack lib
-      , acUse     = use
       }
 
 instance FromValue Phase where
