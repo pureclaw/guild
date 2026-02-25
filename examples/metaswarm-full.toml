@@ -1,0 +1,153 @@
+# metaswarm-full.toml
+# Full MetaSwarm software development team spec.
+# This is the Phase 0 test case: guild init metaswarm-full.toml
+# should produce output equivalent to npx metaswarm install.
+
+[project]
+name    = "metaswarm-full"
+description = "Full 9-phase software development workflow with adversarial review gates"
+
+[agents]
+# Path to the agent library on disk. Can be an absolute path or ~ expansion.
+# Clone metaswarm and point here: git clone https://github.com/dsifry/metaswarm
+library = "./meta-metaswarm/examples/metaswarm-full"
+
+use = [
+  "agents/researcher",
+  "agents/architect",
+  "agents/architect_reviewer",
+  "agents/coder",
+  "agents/adversarial_reviewer",
+  "agents/code_reviewer",
+  "agents/feasibility_reviewer",
+  "agents/completeness_reviewer",
+  "agents/scope_reviewer",
+  "agents/product_manager",
+  "agents/designer",
+  "agents/security_design",
+  "agents/cto",
+  "agents/pr_shepherd",
+  "agents/knowledge_curator",
+]
+
+# ---------------------------------------------------------------------------
+# Pipeline phases — maps to the 9-phase MetaSwarm workflow
+# ---------------------------------------------------------------------------
+
+[[phases]]
+name  = "research"
+agent = "researcher"
+
+[[phases]]
+name  = "plan"
+agent = "architect"
+
+[[phases]]
+name        = "plan_review"
+agents      = ["feasibility_reviewer", "completeness_reviewer", "scope_reviewer"]
+require     = "all_passed"
+fresh_instance = true
+
+[[phases]]
+name    = "design_review"
+agents  = ["product_manager", "architect_reviewer", "designer", "security_design", "cto"]
+require = "all_approved"
+
+[[phases]]
+name  = "decompose"
+agent = "architect"
+
+# Execution loop — one iteration per work unit
+[[phases]]
+name       = "implement"
+agent      = "coder"
+fresh_instance = false   # coder retains context across work units
+
+[[phases]]
+name           = "adversarial_review"
+agent          = "adversarial_reviewer"
+fresh_instance = true    # MUST be a fresh instance — no memory of prior reviews
+
+[[phases]]
+name  = "final_review"
+agent = "code_reviewer"
+
+[[phases]]
+name  = "pr_shepherd"
+agent = "pr_shepherd"
+
+[[phases]]
+name  = "knowledge_extract"
+agent = "knowledge_curator"
+
+# ---------------------------------------------------------------------------
+# Gates
+# ---------------------------------------------------------------------------
+
+[[gates]]
+name    = "plan_quality"
+type    = "predicate"
+expr    = "all(r.verdict == 'PASS' for r in output.reviews)"
+
+[[gates]]
+name    = "design_approved"
+type    = "predicate"
+expr    = "all(r.verdict == 'APPROVED' for r in output.reviews)"
+
+[[gates]]
+name    = "tests_pass"
+type    = "shell"
+command = "${build.test}"
+
+[[gates]]
+name    = "type_check"
+type    = "shell"
+command = "${build.typecheck}"
+
+[[gates]]
+name    = "lint_pass"
+type    = "shell"
+command = "${build.lint}"
+
+[[gates]]
+name    = "coverage_met"
+type    = "shell"
+command = "${build.coverage}"
+
+[[gates]]
+name    = "file_scope_respected"
+type    = "shell"
+command = "git diff --name-only HEAD | xargs -I{} grep -qF '{}' .agentic/current-work-unit.json"
+
+[[gates]]
+name    = "review_passed"
+type    = "predicate"
+expr    = "output.verdict == 'PASS'"
+
+# ---------------------------------------------------------------------------
+# Human checkpoints — pipeline pauses for explicit human approval
+# ---------------------------------------------------------------------------
+
+[[checkpoints]]
+after       = "plan_review"
+description = "Review implementation plan before design review. All 3 adversarial reviewers passed."
+
+[[checkpoints]]
+after       = "design_review"
+description = "Approve design before implementation. All 5 specialist reviewers approved."
+
+[[checkpoints]]
+after       = "pr_shepherd"
+description = "Final merge approval. PR passed CI, all review threads resolved."
+
+# ---------------------------------------------------------------------------
+# Build configuration — used to generate coverage-thresholds.json and
+# fill ${build.*} references in gate commands
+# ---------------------------------------------------------------------------
+
+[build]
+test               = "npm test"
+lint               = "npm run lint"
+typecheck          = "npx tsc --noEmit"
+coverage           = "npm run test:coverage"
+coverage_threshold = 100
