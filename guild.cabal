@@ -1,11 +1,10 @@
 cabal-version:      3.0
 name:               guild
 version:            0.1.0.0
-synopsis:           Agent team orchestration framework — spec compiler
+synopsis:           Agent team orchestration framework
 description:
   Guild reads a compact TOML team spec and generates Claude Code project
-  scaffolding: CLAUDE.md, slash commands, agent skills, beads config.
-  Milestone 1 is a scaffolding generator, not a runtime.
+  scaffolding, then runs agent pipelines with named slot routing and gates.
 license:            MIT
 author:             Zoe
 build-type:         Simple
@@ -20,6 +19,10 @@ library
         Guild.Parser
         Guild.Resolver
         Guild.Generator
+        Guild.Runtime.Types
+        Guild.Runtime.SlotStore
+        Guild.Runtime.Gate
+        Guild.Runtime.Machine
     build-depends:
         base          >= 4.18 && < 5,
         text          >= 2.0,
@@ -27,7 +30,11 @@ library
         containers    >= 0.6,
         filepath      >= 1.4,
         directory     >= 1.3,
-        bytestring    >= 0.11
+        bytestring    >= 0.11,
+        sqlite-simple >= 0.4,
+        uuid          >= 1.3,
+        process       >= 1.6,
+        time          >= 1.12
     hs-source-dirs:   src
     default-language: GHC2021
 
@@ -40,6 +47,8 @@ executable guild
         text          >= 2.0,
         filepath      >= 1.4,
         directory     >= 1.3,
-        optparse-applicative >= 0.18
+        optparse-applicative >= 0.18,
+        uuid          >= 1.3,
+        time          >= 1.12
     hs-source-dirs:   app
     default-language: GHC2021
