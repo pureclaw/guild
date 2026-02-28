@@ -492,13 +492,13 @@ All of that is milestone 2+. Milestone 1 is purely: **compact spec in → Claude
 - [ ] Test: `guild init` on MetaSwarm-full spec produces identical output to `npx metaswarm install`
 
 ### Phase 1: Core Runtime (Foundation)
-- [ ] Redesign `Types.hs` around the agent + named slot model
-- [ ] Implement `MetaAgent.Loader` — reads directory format and single-file YAML
-- [ ] Implement `MetaAgent.SlotStore` — named slot push/pull with SQLite backend
-- [ ] Implement `MetaAgent.Machine` — state machine with per-state lifecycle states (`pending | running | success | failed | skipped | up_for_retry | deferred`)
-- [ ] Implement `MetaAgent.Gate` — shell, predicate, schema_valid builtins
-- [ ] `guild validate`, `guild run`, `guild runs show` commands
-- [ ] MetaSwarm example pipeline runs successfully on a real task
+- [x] `Guild.Runtime.Types` — RunStatus, StepRecord, SlotEntry *(2026-02-28, commit d45eb56)*
+- [ ] `MetaAgent.Loader` — explicit agent directory loader (currently handled via Guild.Resolver)
+- [x] `Guild.Runtime.SlotStore` — named slot push/pull with SQLite backend *(2026-02-28)*
+- [x] `Guild.Runtime.Machine` — sequential pipeline runner, per-phase lifecycle *(2026-02-28)*
+- [x] `Guild.Runtime.Gate` — shell gate evaluation *(2026-02-28)*
+- [x] `guild validate`, `guild run`, `guild runs list` commands — all verified working *(2026-02-28)*
+- [ ] MetaSwarm example pipeline runs successfully on a real task *(next)*
 
 ### Phase 2: Deferred Execution + Knowledge System
 - [ ] Deferred checkpoints — pipeline suspends, `guild resume` continues
