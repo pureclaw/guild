@@ -14,6 +14,7 @@ import Guild.Parser (parseTeamSpec)
 import Guild.Resolver (resolveAgents)
 import Guild.Generator (generateProject)
 import Guild.Runtime.Machine (runPipeline)
+import Guild.Runtime.Beads (primeContext, extractKnowledge)
 
 -- ---------------------------------------------------------------------------
 -- CLI definition
@@ -189,8 +190,15 @@ runRun specPath = do
       putStrLn $ "Phases:    " ++ show (length (tsPhases spec))
       putStrLn ""
 
+      -- Load beads knowledge context (no-op if .beads/knowledge/ doesn't exist)
+      beads <- primeContext cwd
+      putStrLn "[beads] Knowledge context primed."
+
       -- Execute the pipeline
-      runPipeline spec runDir
+      runHistory <- runPipeline spec runDir beads
+
+      -- Extract lessons learned back into .beads/knowledge/
+      extractKnowledge cwd runHistory timestamp
 
       putStrLn ""
       putStrLn $ "Run " ++ runId ++ " complete."

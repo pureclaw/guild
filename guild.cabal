@@ -23,6 +23,7 @@ library
         Guild.Runtime.SlotStore
         Guild.Runtime.Gate
         Guild.Runtime.Machine
+        Guild.Runtime.Beads
     build-depends:
         base          >= 4.18 && < 5,
         text          >= 2.0,
