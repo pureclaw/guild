@@ -1,0 +1,77 @@
+# dojolens-mvp.toml
+# DojoLens MVP build pipeline — Phase 1 (video upload + AI analysis scaffold)
+#
+# This is the first real-world test of Guild with deferred checkpoints.
+# Run with: guild run examples/dojolens/dojolens-mvp.toml
+# Resume:   guild resume examples/dojolens/dojolens-mvp.toml .agentic/runs/<id>
+
+agents_dir = "./examples/dojolens/agents"
+
+[project]
+name        = "dojolens-mvp"
+description = "DojoLens Phase 1 MVP — judo video analysis SaaS. Haskell backend + Python CV pipeline + React frontend."
+
+# ---------------------------------------------------------------------------
+# Pipeline phases
+# ---------------------------------------------------------------------------
+
+# Phase 1: Architect reviews the product spec and produces concrete technical contracts.
+[[phases]]
+name  = "architecture"
+agent = "architect"
+
+# Phase 2: Haskell dev scaffolds the backend from the architect's output.
+[[phases]]
+name  = "backend-scaffold"
+agent = "haskell-dev"
+
+# Phase 3: Product reviewer checks scope before we invest in CV + frontend.
+# Human checkpoint fires after this — Mighty reviews before proceeding.
+[[phases]]
+name  = "product-review"
+agent = "product-reviewer"
+
+# Phase 4: CV engineer builds the analysis pipeline interface.
+[[phases]]
+name  = "cv-pipeline"
+agent = "cv-engineer"
+
+# Phase 5: React dev scaffolds the frontend from the architecture + backend contracts.
+[[phases]]
+name  = "frontend-scaffold"
+agent = "react-dev"
+
+# Phase 6: QA engineer writes the MVP test plan and acceptance criteria.
+[[phases]]
+name  = "qa-plan"
+agent = "qa-engineer"
+
+# ---------------------------------------------------------------------------
+# Human checkpoints — pipeline pauses for review before continuing
+# ---------------------------------------------------------------------------
+
+# Pause after product-review: Mighty confirms scope is right before
+# CV + frontend work begins. This is where we'd cut scope if needed.
+[[checkpoints]]
+after       = "product-review"
+description = "Review the architecture and product scope. Confirm we're building the right MVP before CV + frontend investment. Cut any scope that doesn't serve the sensei or student core flows."
+
+# ---------------------------------------------------------------------------
+# Gates — automated checks (examples for future use)
+# ---------------------------------------------------------------------------
+
+# [[gates]]
+# name    = "haskell-typecheck"
+# type    = "shell"
+# command = "cd ~/code/dojolens && cabal build --dry-run 2>&1 | grep -q 'Up to date'"
+
+# ---------------------------------------------------------------------------
+# Build config (not yet wired into runtime — defines project quality bars)
+# ---------------------------------------------------------------------------
+
+[build]
+test              = "cabal test"
+lint              = "hlint src/"
+typecheck         = "cabal build"
+coverage          = "cabal test --enable-coverage"
+coverage_threshold = 70
