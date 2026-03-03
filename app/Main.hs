@@ -2,7 +2,7 @@ module Main (main) where
 
 import Options.Applicative
 import System.Directory (makeAbsolute, getCurrentDirectory, createDirectoryIfMissing,
-                         listDirectory, doesDirectoryExist)
+                         listDirectory, doesDirectoryExist, doesFileExist)
 import System.FilePath (takeDirectory, (</>))
 import Data.UUID.V4 (nextRandom)
 import Data.UUID (toString)
@@ -13,7 +13,8 @@ import Guild.Types (TeamSpec(..), ProjectConfig(..))
 import Guild.Parser (parseTeamSpec)
 import Guild.Resolver (resolveAgents)
 import Guild.Generator (generateProject)
-import Guild.Runtime.Machine (runPipeline)
+import Guild.Runtime.Machine (PipelineResult(..), runPipeline, runPipelineFrom,
+                               readCheckpoint, CheckpointState(..))
 import Guild.Runtime.Beads (primeContext, extractKnowledge)
 
 -- ---------------------------------------------------------------------------
@@ -23,16 +24,18 @@ import Guild.Runtime.Beads (primeContext, extractKnowledge)
 data Command
   = Init FilePath (Maybe FilePath)
   | Validate FilePath
-  | Run FilePath
+  | Run FilePath (Maybe FilePath)   -- spec, optional resume run-dir
+  | Resume FilePath FilePath        -- spec, run-dir to resume
   | RunsList
   deriving (Show)
 
 parseCommand :: Parser Command
 parseCommand = subparser
-  ( command "init" (info initOpts (progDesc "Initialize project from a team spec"))
+  ( command "init"   (info initOpts   (progDesc "Initialize project from a team spec"))
  <> command "validate" (info validateOpts (progDesc "Validate a team spec"))
- <> command "run" (info runOpts (progDesc "Execute a pipeline from a team spec"))
- <> command "runs" (info runsOpts (progDesc "Manage pipeline runs"))
+ <> command "run"    (info runOpts    (progDesc "Execute a pipeline from a team spec"))
+ <> command "resume" (info resumeOpts (progDesc "Resume a paused pipeline run"))
+ <> command "runs"   (info runsOpts   (progDesc "Manage pipeline runs"))
   )
 
 initOpts :: Parser Command
@@ -61,6 +64,22 @@ runOpts = Run
       ( metavar "SPEC"
      <> help "Path to team.toml spec file"
       )
+  <*> optional (strOption
+      ( long "resume"
+     <> metavar "RUN_DIR"
+     <> help "Resume a paused run from the given run directory"
+      ))
+
+resumeOpts :: Parser Command
+resumeOpts = Resume
+  <$> argument str
+      ( metavar "SPEC"
+     <> help "Path to team.toml spec file"
+      )
+  <*> argument str
+      ( metavar "RUN_DIR"
+     <> help "Path to the paused run directory"
+      )
 
 runsOpts :: Parser Command
 runsOpts = subparser
@@ -82,10 +101,12 @@ main :: IO ()
 main = do
   cmd <- execParser opts
   case cmd of
-    Init specPath mOutput -> runInit specPath mOutput
-    Validate specPath     -> runValidate specPath
-    Run specPath          -> runRun specPath
-    RunsList              -> runRunsList
+    Init specPath mOutput    -> runInit specPath mOutput
+    Validate specPath        -> runValidate specPath
+    Run specPath Nothing     -> runRun specPath
+    Run specPath (Just rdir) -> doResume specPath rdir
+    Resume specPath runDir   -> doResume specPath runDir
+    RunsList                 -> runRunsList
 
 -- ---------------------------------------------------------------------------
 -- init
@@ -158,9 +179,10 @@ runValidate specPath = do
           putStrLn $ "  Phases:     " ++ show (length (tsPhases spec))
           putStrLn $ "  Agents:     " ++ show (length agents)
           putStrLn $ "  Gates:      " ++ show (length (tsGates spec))
+          putStrLn $ "  Checkpoints:" ++ show (length (tsCheckpoints spec))
 
 -- ---------------------------------------------------------------------------
--- run
+-- run (fresh start)
 -- ---------------------------------------------------------------------------
 
 runRun :: FilePath -> IO ()
@@ -174,9 +196,8 @@ runRun specPath = do
       putStrLn "Error parsing team spec:"
       putStrLn err
     Right spec -> do
-      -- Generate a run ID and create the run directory
       runId <- toString <$> nextRandom
-      now <- getCurrentTime
+      now   <- getCurrentTime
       let timestamp = formatTime defaultTimeLocale "%Y-%m-%dT%H:%M:%SZ" now
 
       cwd <- getCurrentDirectory
@@ -184,24 +205,82 @@ runRun specPath = do
           runDir   = runsBase </> runId
       createDirectoryIfMissing True runDir
 
-      putStrLn $ "Run ID:    " ++ runId
-      putStrLn $ "Started:   " ++ timestamp
-      putStrLn $ "Run dir:   " ++ runDir
-      putStrLn $ "Phases:    " ++ show (length (tsPhases spec))
+      putStrLn $ "Run ID:      " ++ runId
+      putStrLn $ "Started:     " ++ timestamp
+      putStrLn $ "Run dir:     " ++ runDir
+      putStrLn $ "Phases:      " ++ show (length (tsPhases spec))
+      putStrLn $ "Checkpoints: " ++ show (length (tsCheckpoints spec))
       putStrLn ""
 
-      -- Load beads knowledge context (no-op if .beads/knowledge/ doesn't exist)
       beads <- primeContext cwd
       putStrLn "[beads] Knowledge context primed."
 
-      -- Execute the pipeline
-      runHistory <- runPipeline spec runDir beads
+      result' <- runPipeline spec runDir beads
+      handleResult cwd timestamp spec result'
 
-      -- Extract lessons learned back into .beads/knowledge/
-      extractKnowledge cwd runHistory timestamp
+-- ---------------------------------------------------------------------------
+-- resume (from checkpoint)
+-- ---------------------------------------------------------------------------
 
-      putStrLn ""
-      putStrLn $ "Run " ++ runId ++ " complete."
+doResume :: FilePath -> FilePath -> IO ()
+doResume specPath runDir = do
+  absSpec  <- makeAbsolute specPath
+  absRunDir <- makeAbsolute runDir
+
+  -- Verify checkpoint exists
+  let cpFile = absRunDir ++ "/checkpoint.state"
+  exists <- doesFileExist cpFile
+  if not exists
+    then putStrLn $ "No checkpoint found in: " ++ absRunDir
+    else do
+      cpResult <- readCheckpoint absRunDir
+      case cpResult of
+        Left err -> putStrLn $ "Error reading checkpoint: " ++ err
+        Right cs -> do
+          putStrLn $ "Resuming run:    " ++ absRunDir
+          putStrLn $ "Paused after:    " ++ show (csPausedAfter cs)
+          putStrLn $ "Resuming from:   phase index " ++ show (csNextIdx cs)
+          putStrLn $ "Checkpoint desc: " ++ show (csDescription cs)
+          putStrLn ""
+
+          -- Parse the spec
+          result <- parseTeamSpec absSpec
+          case result of
+            Left err -> do
+              putStrLn "Error parsing team spec:"
+              putStrLn err
+            Right spec -> do
+              now <- getCurrentTime
+              let timestamp = formatTime defaultTimeLocale "%Y-%m-%dT%H:%M:%SZ" now
+              cwd <- getCurrentDirectory
+
+              beads <- primeContext cwd
+              putStrLn "[beads] Knowledge context primed."
+
+              pResult <- runPipelineFrom spec absRunDir beads (csNextIdx cs)
+              handleResult cwd timestamp spec pResult
+
+-- ---------------------------------------------------------------------------
+-- Shared result handler
+-- ---------------------------------------------------------------------------
+
+handleResult :: FilePath -> String -> TeamSpec -> PipelineResult -> IO ()
+handleResult cwd timestamp _spec (Completed output) = do
+  extractKnowledge cwd output timestamp
+  putStrLn ""
+  putStrLn "Pipeline complete. ✓"
+
+handleResult _cwd _timestamp _spec (Paused runDir pausedAfter _nextIdx desc _output) = do
+  putStrLn ""
+  putStrLn "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  putStrLn "  ⏸  Pipeline paused at human checkpoint"
+  putStrLn $ "  After phase:   " ++ show pausedAfter
+  putStrLn $ "  Description:   " ++ show desc
+  putStrLn $ "  Run dir:       " ++ runDir
+  putStrLn ""
+  putStrLn "  Review the output above, then resume with:"
+  putStrLn $ "    guild resume <spec.toml> " ++ runDir
+  putStrLn "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
 -- ---------------------------------------------------------------------------
 -- runs list
@@ -220,4 +299,18 @@ runRunsList = do
         then putStrLn "No runs found."
         else do
           putStrLn "Pipeline runs:"
-          mapM_ (\d -> putStrLn $ "  " ++ d) dirs
+          mapM_ (showRun runsBase) dirs
+
+showRun :: FilePath -> FilePath -> IO ()
+showRun runsBase runId = do
+  let runDir = runsBase </> runId
+      cpFile = runDir ++ "/checkpoint.state"
+  cpExists <- doesFileExist cpFile
+  if cpExists
+    then do
+      cpResult <- readCheckpoint runDir
+      case cpResult of
+        Right cs -> putStrLn $ "  " ++ runId ++ "  [PAUSED after '" ++ show (csPausedAfter cs) ++ "']"
+        Left  _  -> putStrLn $ "  " ++ runId ++ "  [PAUSED — unreadable checkpoint]"
+    else
+      putStrLn $ "  " ++ runId ++ "  [COMPLETE]"
