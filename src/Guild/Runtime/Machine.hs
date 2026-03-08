@@ -108,11 +108,11 @@ runPipelineFrom spec runDir beads agentsBaseDir startIdx = do
       allGates  = tsGates spec
   go store allPhases toRun checkpts allGates startIdx T.empty
   where
-    go _store _all []            _checkpts _gates _idx acc = pure (Completed acc)
-    go  store  all (phase:rest)   checkpts  gates  idx  acc = do
+    go _store _phases []           _checkpts _gates _idx acc = pure (Completed acc)
+    go  store  phases (phase:rest)  checkpts  gates  idx  acc = do
 
       -- Run phase (single-agent or parallel multi-agent)
-      output <- runPhase store all beads agentsBaseDir phase
+      output <- runPhase store phases beads agentsBaseDir phase
 
       let acc' = if T.null acc then output else acc <> "\n\n" <> output
 
@@ -138,7 +138,7 @@ runPipelineFrom spec runDir beads agentsBaseDir startIdx = do
                 , prOutput      = acc'
                 }
             _ ->
-              go store all rest checkpts gates (idx + 1) acc'
+              go store phases rest checkpts gates (idx + 1) acc'
 
 findCheckpoint :: [Checkpoint] -> Text -> Maybe Checkpoint
 findCheckpoint cps phaseName = find ((== phaseName) . cpAfter) cps

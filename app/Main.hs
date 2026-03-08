@@ -1,12 +1,12 @@
 module Main (main) where
 
 import Control.Monad (filterM)
-import Data.List (sort)
+import Data.List (sort, isInfixOf)
 import qualified Data.Text as T
 import Options.Applicative
 import System.Directory (makeAbsolute, getCurrentDirectory, createDirectoryIfMissing,
                          listDirectory, doesDirectoryExist, doesFileExist)
-import System.FilePath (takeDirectory, (</>))
+import System.FilePath (takeDirectory, takeFileName, (</>))
 import Data.UUID.V4 (nextRandom)
 import Data.UUID (toString)
 import Data.Time.Clock (getCurrentTime)
@@ -19,6 +19,7 @@ import Guild.Generator (generateProject)
 import Guild.Runtime.Machine (PipelineResult(..), runPipeline, runPipelineFrom,
                                readCheckpoint, CheckpointState(..))
 import Guild.Runtime.Beads (primeContext, extractKnowledge)
+import Guild.Runtime.SlotStore (openSlotStore, listSlots)
 
 -- ---------------------------------------------------------------------------
 -- CLI definition
@@ -30,6 +31,7 @@ data Command
   | Run FilePath (Maybe FilePath)   -- spec, optional resume run-dir
   | Resume FilePath FilePath        -- spec, run-dir to resume
   | RunsList
+  | RunsShow FilePath               -- run-dir; show slot contents
   | AgentsList FilePath             -- spec; list agents in agents_dir
   | Graph FilePath                  -- spec; print ASCII pipeline graph
   deriving (Show)
@@ -91,7 +93,15 @@ resumeOpts = Resume
 runsOpts :: Parser Command
 runsOpts = subparser
   ( command "list" (info (pure RunsList) (progDesc "List all pipeline runs"))
+ <> command "show" (info runsShowOpts   (progDesc "Show slot outputs from a run"))
   )
+
+runsShowOpts :: Parser Command
+runsShowOpts = RunsShow
+  <$> argument str
+      ( metavar "RUN_DIR"
+     <> help "Path to the run directory (or run ID under .agentic/runs/)"
+      )
 
 agentsOpts :: Parser Command
 agentsOpts = subparser
@@ -133,6 +143,7 @@ main = do
     Run specPath (Just rdir) -> doResume specPath rdir
     Resume specPath runDir   -> doResume specPath runDir
     RunsList                 -> runRunsList
+    RunsShow runDirArg       -> runRunsShow runDirArg
     AgentsList specPath      -> runAgentsList specPath
     Graph specPath           -> runGraph specPath
 
@@ -224,9 +235,11 @@ runRun specPath = do
       putStrLn "Error parsing team spec:"
       putStrLn err
     Right spec -> do
-      runId <- toString <$> nextRandom
+      uuid  <- toString <$> nextRandom
       now   <- getCurrentTime
-      let timestamp = formatTime defaultTimeLocale "%Y-%m-%dT%H:%M:%SZ" now
+      let timestamp  = formatTime defaultTimeLocale "%Y-%m-%dT%H:%M:%SZ" now
+          dirStamp   = formatTime defaultTimeLocale "%Y%m%d-%H%M%S" now
+          runId      = dirStamp ++ "-" ++ take 8 uuid
 
       cwd <- getCurrentDirectory
       let runsBase = cwd </> ".agentic" </> "runs"
@@ -241,6 +254,9 @@ runRun specPath = do
       putStrLn ""
 
       agentsBaseDir <- resolveAgentsDir cwd (tsAgentsDir spec)
+
+      -- Write run manifest
+      writeRunManifest runDir runId absSpec timestamp (length (tsPhases spec)) agentsBaseDir
 
       beads <- primeContext cwd
       putStrLn "[beads] Knowledge context primed."
@@ -428,6 +444,115 @@ findCp :: [Checkpoint] -> T.Text -> Maybe Checkpoint
 findCp cps name = case filter (\cp -> cpAfter cp == name) cps of
   (c:_) -> Just c
   []    -> Nothing
+
+-- | Write a simple JSON manifest to the run directory.
+writeRunManifest :: FilePath -> String -> FilePath -> String -> Int -> FilePath -> IO ()
+writeRunManifest runDir runId specPath startedAt phaseCount agentsDir = do
+  let manifest = unlines
+        [ "{"
+        , "  \"run_id\": \"" ++ runId ++ "\","
+        , "  \"spec\": \"" ++ specPath ++ "\","
+        , "  \"started_at\": \"" ++ startedAt ++ "\","
+        , "  \"phase_count\": " ++ show phaseCount ++ ","
+        , "  \"agents_dir\": \"" ++ agentsDir ++ "\""
+        , "}"
+        ]
+  writeFile (runDir </> "run.json") manifest
+
+-- ---------------------------------------------------------------------------
+-- runs show
+-- ---------------------------------------------------------------------------
+
+runRunsShow :: FilePath -> IO ()
+runRunsShow runDirArg = do
+  cwd <- getCurrentDirectory
+
+  -- Support both full paths and run IDs under .agentic/runs/
+  absRunDir <- do
+    exists <- doesDirectoryExist runDirArg
+    if exists
+      then makeAbsolute runDirArg
+      else do
+        let candidatePath = cwd </> ".agentic" </> "runs" </> runDirArg
+        exists2 <- doesDirectoryExist candidatePath
+        if exists2
+          then pure candidatePath
+          else do
+            putStrLn $ "Run not found: " ++ runDirArg
+            pure ""
+
+  if null absRunDir
+    then pure ()
+    else showRunDetails absRunDir
+
+showRunDetails :: FilePath -> IO ()
+showRunDetails runDir = do
+  -- Read manifest if present
+  let manifestPath = runDir </> "run.json"
+  hasManifest <- doesFileExist manifestPath
+  if hasManifest
+    then do
+      manifest <- readFile manifestPath
+      putStrLn $ "Run:     " ++ takeFileName runDir
+      -- Print selected fields
+      let ls = lines manifest
+          findField k = case filter (k `isInfixOf`) ls of
+            (l:_) -> dropWhile (== ' ') . drop 1 . dropWhile (/= ':') $ l
+            []    -> "(unknown)"
+      putStrLn $ "Spec:    " ++ cleanup (findField "spec")
+      putStrLn $ "Started: " ++ cleanup (findField "started_at")
+    else
+      putStrLn $ "Run: " ++ takeFileName runDir
+
+  -- Check status
+  let cpFile = runDir </> "checkpoint.state"
+  cpExists <- doesFileExist cpFile
+  status <- if cpExists
+    then return "PAUSED"
+    else return "COMPLETE"
+  putStrLn $ "Status:  " ++ status
+
+  -- Read slot store
+  let dbPath = runDir </> "slots.db"
+  dbExists <- doesFileExist dbPath
+  if not dbExists
+    then putStrLn "(no slot data)"
+    else do
+      store <- openSlotStore dbPath
+      slots <- listSlots store
+      putStrLn ""
+      putStrLn $ replicate 60 '─'
+
+      -- Group slots by step and print each
+      let steps = nubOrdered (map (\(s,_,_) -> s) slots)
+      mapM_ (\step -> do
+        let stepSlots = [(k,v) | (s,k,v) <- slots, s == step]
+        -- Find the aggregate slot (key == step name) as the main output
+        let mainOutput = case [(v) | (k,v) <- stepSlots, k == step] of
+              (v:_) -> v
+              []    -> case stepSlots of
+                ((_, v):_) -> v
+                []         -> T.empty
+        putStrLn $ "  ▶ " ++ T.unpack step
+        putStrLn $ replicate 60 '─'
+        let preview = T.take 2000 mainOutput
+        putStrLn (T.unpack preview)
+        if T.length mainOutput > 2000
+          then putStrLn $ "  ... (" ++ show (T.length mainOutput) ++ " chars total)"
+          else pure ()
+        putStrLn ""
+        ) steps
+
+-- | Remove duplicates while preserving order.
+nubOrdered :: Eq a => [a] -> [a]
+nubOrdered = foldr (\x acc -> if x `elem` acc then acc else x:acc) []
+
+-- | Strip JSON string quotes and trailing comma/whitespace.
+cleanup :: String -> String
+cleanup s =
+  let s1 = dropWhile (\c -> c == '"' || c == ' ') s
+      s2 = reverse . dropWhile (\c -> c == '"' || c == ',' || c == ' ') . reverse $ s1
+  in s2
 
 -- ---------------------------------------------------------------------------
 -- agents list
