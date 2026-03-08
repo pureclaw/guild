@@ -169,10 +169,11 @@ runParallelPhase store allPhases beads agentsDir phase agentList = do
   context <- gatherContext store allPhases phase
   let prompt = buildPrompt name (beadsText beads) context
 
-  -- Fan out: run all agents concurrently, each with their own SOUL.md
+  -- Fan out: run all agents concurrently, each with their own SOUL.md + model
   results <- mapConcurrently (\agent -> do
-    mSoul <- loadSoulMd agentsDir agent
-    runAgent agent prompt mSoul
+    mSoul  <- loadSoulMd agentsDir agent
+    mModel <- loadAgentModel agentsDir agent
+    runAgent agent prompt mSoul mModel
     ) agentList
 
   -- Store individual results per-agent slot
@@ -218,8 +219,9 @@ runSingleAgentPhase store allPhases beads agentsDir phase = do
   context <- gatherContext store allPhases phase
   let prompt = buildPrompt name (beadsText beads) context
 
-  mSoul <- loadSoulMd agentsDir agent
-  output <- runAgent agent prompt mSoul
+  mSoul  <- loadSoulMd agentsDir agent
+  mModel <- loadAgentModel agentsDir agent
+  output <- runAgent agent prompt mSoul mModel
   pushSlot store name name output
   putStrLn $ "[guild]   Phase '" ++ T.unpack name ++ "' complete ("
           ++ show (T.length output) ++ " chars)."
@@ -238,16 +240,19 @@ loadSoulMd agentsDir agentName = do
     then Just <$> TIO.readFile soulPath
     else pure Nothing
 
--- | Invoke claude with a task prompt and optional system prompt (SOUL.md).
+-- | Invoke claude with a task prompt, optional system prompt (SOUL.md), and optional model.
 -- When SOUL.md is present, it becomes the system prompt (agent persona).
--- The task prompt (phase context + task description) is the user turn.
-runAgent :: Text -> Text -> Maybe Text -> IO Text
-runAgent _agentName prompt mSoulMd = do
+-- When model is specified (from config.yaml), it overrides the default.
+runAgent :: Text -> Text -> Maybe Text -> Maybe Text -> IO Text
+runAgent _agentName prompt mSoulMd mModel = do
   let baseArgs = ["--dangerously-skip-permissions", "-p", T.unpack prompt]
-      args = case mSoulMd of
+      withSoul = case mSoulMd of
         Just soul -> baseArgs ++ ["--system-prompt", T.unpack soul]
         Nothing   -> baseArgs
-  (exitCode, stdout, stderr) <- readProcessWithExitCode "claude" args ""
+      withModel = case mModel of
+        Just model -> withSoul ++ ["--model", T.unpack model]
+        Nothing    -> withSoul
+  (exitCode, stdout, stderr) <- readProcessWithExitCode "claude" withModel ""
   case exitCode of
     ExitSuccess ->
       pure (T.pack stdout)
@@ -283,3 +288,31 @@ buildPrompt phaseName beadsKnowledge contextText =
       else "## Context from upstream phases\n\n" <> contextText
     , "## Task: " <> phaseName
     ]
+
+-- ---------------------------------------------------------------------------
+-- Agent config loading
+-- ---------------------------------------------------------------------------
+
+-- | Load model name from agent's config.yaml (if present).
+-- Looks for a line containing "model:" and extracts the value.
+-- Returns Nothing if config.yaml doesn't exist or model is not specified.
+loadAgentModel :: FilePath -> Text -> IO (Maybe Text)
+loadAgentModel agentsDir agentName = do
+  let configPath = agentsDir </> T.unpack agentName </> "config.yaml"
+  exists <- doesFileExist configPath
+  if not exists
+    then pure Nothing
+    else do
+      contents <- TIO.readFile configPath
+      pure (extractModelField (T.lines contents))
+
+-- | Extract the model value from YAML lines.
+-- Handles: "model: claude-opus-4-20250514" or "  model: sonnet"
+extractModelField :: [Text] -> Maybe Text
+extractModelField [] = Nothing
+extractModelField (line:rest)
+  | "model:" `T.isInfixOf` line =
+      let val = T.strip (T.dropWhile (/= ':') line)
+          stripped = T.strip (T.drop 1 val)
+      in if T.null stripped then Nothing else Just stripped
+  | otherwise = extractModelField rest
