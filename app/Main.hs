@@ -1,5 +1,8 @@
 module Main (main) where
 
+import Control.Monad (filterM)
+import Data.List (sort)
+import qualified Data.Text as T
 import Options.Applicative
 import System.Directory (makeAbsolute, getCurrentDirectory, createDirectoryIfMissing,
                          listDirectory, doesDirectoryExist, doesFileExist)
@@ -9,7 +12,7 @@ import Data.UUID (toString)
 import Data.Time.Clock (getCurrentTime)
 import Data.Time.Format (formatTime, defaultTimeLocale)
 
-import Guild.Types (TeamSpec(..), ProjectConfig(..))
+import Guild.Types (TeamSpec(..), ProjectConfig(..), Phase(..))
 import Guild.Parser (parseTeamSpec)
 import Guild.Resolver (resolveAgents)
 import Guild.Generator (generateProject)
@@ -27,15 +30,17 @@ data Command
   | Run FilePath (Maybe FilePath)   -- spec, optional resume run-dir
   | Resume FilePath FilePath        -- spec, run-dir to resume
   | RunsList
+  | AgentsList FilePath             -- spec; list agents in agents_dir
   deriving (Show)
 
 parseCommand :: Parser Command
 parseCommand = subparser
-  ( command "init"   (info initOpts   (progDesc "Initialize project from a team spec"))
+  ( command "init"     (info initOpts     (progDesc "Initialize project from a team spec"))
  <> command "validate" (info validateOpts (progDesc "Validate a team spec"))
- <> command "run"    (info runOpts    (progDesc "Execute a pipeline from a team spec"))
- <> command "resume" (info resumeOpts (progDesc "Resume a paused pipeline run"))
- <> command "runs"   (info runsOpts   (progDesc "Manage pipeline runs"))
+ <> command "run"      (info runOpts      (progDesc "Execute a pipeline from a team spec"))
+ <> command "resume"   (info resumeOpts   (progDesc "Resume a paused pipeline run"))
+ <> command "runs"     (info runsOpts     (progDesc "Manage pipeline runs"))
+ <> command "agents"   (info agentsOpts   (progDesc "Manage agent library"))
   )
 
 initOpts :: Parser Command
@@ -86,6 +91,18 @@ runsOpts = subparser
   ( command "list" (info (pure RunsList) (progDesc "List all pipeline runs"))
   )
 
+agentsOpts :: Parser Command
+agentsOpts = subparser
+  ( command "list" (info agentsListOpts (progDesc "List available agents in the agents_dir"))
+  )
+
+agentsListOpts :: Parser Command
+agentsListOpts = AgentsList
+  <$> argument str
+      ( metavar "SPEC"
+     <> help "Path to team.toml spec (to locate agents_dir)"
+      )
+
 opts :: ParserInfo Command
 opts = info (parseCommand <**> helper)
   ( fullDesc
@@ -107,6 +124,7 @@ main = do
     Run specPath (Just rdir) -> doResume specPath rdir
     Resume specPath runDir   -> doResume specPath runDir
     RunsList                 -> runRunsList
+    AgentsList specPath      -> runAgentsList specPath
 
 -- ---------------------------------------------------------------------------
 -- init
@@ -238,9 +256,9 @@ doResume specPath runDir = do
         Left err -> putStrLn $ "Error reading checkpoint: " ++ err
         Right cs -> do
           putStrLn $ "Resuming run:    " ++ absRunDir
-          putStrLn $ "Paused after:    " ++ show (csPausedAfter cs)
+          putStrLn $ "Paused after:    " ++ T.unpack (csPausedAfter cs)
           putStrLn $ "Resuming from:   phase index " ++ show (csNextIdx cs)
-          putStrLn $ "Checkpoint desc: " ++ show (csDescription cs)
+          putStrLn $ "Checkpoint desc: " ++ T.unpack (csDescription cs)
           putStrLn ""
 
           -- Parse the spec
@@ -270,12 +288,20 @@ handleResult cwd timestamp _spec (Completed output) = do
   putStrLn ""
   putStrLn "Pipeline complete. ✓"
 
+handleResult _cwd _timestamp _spec (GateFailed phaseName errMsg) = do
+  putStrLn ""
+  putStrLn "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  putStrLn "  ⛔  Pipeline halted — gate check failed"
+  putStrLn $ "  Phase:   " ++ T.unpack phaseName
+  putStrLn $ "  Reason:  " ++ T.unpack errMsg
+  putStrLn "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
 handleResult _cwd _timestamp _spec (Paused runDir pausedAfter _nextIdx desc _output) = do
   putStrLn ""
   putStrLn "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
   putStrLn "  ⏸  Pipeline paused at human checkpoint"
-  putStrLn $ "  After phase:   " ++ show pausedAfter
-  putStrLn $ "  Description:   " ++ show desc
+  putStrLn $ "  After phase:   " ++ T.unpack pausedAfter
+  putStrLn $ "  Description:   " ++ T.unpack desc
   putStrLn $ "  Run dir:       " ++ runDir
   putStrLn ""
   putStrLn "  Review the output above, then resume with:"
@@ -301,6 +327,56 @@ runRunsList = do
           putStrLn "Pipeline runs:"
           mapM_ (showRun runsBase) dirs
 
+-- ---------------------------------------------------------------------------
+-- agents list
+-- ---------------------------------------------------------------------------
+
+runAgentsList :: FilePath -> IO ()
+runAgentsList specPath = do
+  absSpec <- makeAbsolute specPath
+  cwd     <- getCurrentDirectory
+
+  result <- parseTeamSpec absSpec
+  case result of
+    Left err -> do
+      putStrLn "Error parsing team spec:"
+      putStrLn err
+    Right spec -> do
+      -- agents_dir is resolved relative to CWD (where guild is invoked), not the spec file
+      let agentsDir = cwd </> tsAgentsDir spec
+      exists <- doesDirectoryExist agentsDir
+      if not exists
+        then putStrLn $ "agents_dir not found: " ++ agentsDir
+        else do
+          entries <- listDirectory agentsDir
+          agentDirs <- filterM (doesDirectoryExist . (agentsDir </>)) entries
+          putStrLn $ "Agents in " ++ agentsDir ++ " (" ++ show (length agentDirs) ++ " found):"
+          putStrLn ""
+          mapM_ (showAgent agentsDir) (sort agentDirs)
+          putStrLn ""
+          -- Highlight agents referenced in the spec
+          let specAgents = concatMap phaseAgents (tsPhases spec)
+          putStrLn $ "Agents referenced in spec (" ++ show (length specAgents) ++ "):"
+          mapM_ (\a -> putStrLn $ "  • " ++ a) specAgents
+
+phaseAgents :: Phase -> [String]
+phaseAgents p =
+  let single = maybe [] (\a -> [T.unpack a]) (phAgent p)
+      multi  = maybe [] (map T.unpack) (phAgents p)
+  in single ++ multi
+
+showAgent :: FilePath -> FilePath -> IO ()
+showAgent agentsDir agentName = do
+  let agentDir = agentsDir </> agentName
+  hasSoul   <- doesFileExist (agentDir </> "SOUL.md")
+  hasConfig <- doesFileExist (agentDir </> "config.yaml")
+  let (icon, note) = case (hasSoul, hasConfig) of
+        (True, True)  -> ("✓", "")
+        (True, False) -> ("⚠", " (missing config.yaml)")
+        (False, True) -> ("⚠", " (missing SOUL.md)")
+        (False, False)-> ("✗", " (missing SOUL.md + config.yaml)")
+  putStrLn $ "  " ++ icon ++ " " ++ agentName ++ note
+
 showRun :: FilePath -> FilePath -> IO ()
 showRun runsBase runId = do
   let runDir = runsBase </> runId
@@ -310,7 +386,7 @@ showRun runsBase runId = do
     then do
       cpResult <- readCheckpoint runDir
       case cpResult of
-        Right cs -> putStrLn $ "  " ++ runId ++ "  [PAUSED after '" ++ show (csPausedAfter cs) ++ "']"
+        Right cs -> putStrLn $ "  " ++ runId ++ "  [PAUSED after '" ++ T.unpack (csPausedAfter cs) ++ "']"
         Left  _  -> putStrLn $ "  " ++ runId ++ "  [PAUSED — unreadable checkpoint]"
     else
       putStrLn $ "  " ++ runId ++ "  [COMPLETE]"

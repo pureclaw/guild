@@ -34,14 +34,15 @@ data Phase = Phase
   { phName          :: Text
   , phAgent         :: Maybe Text       -- single agent
   , phAgents        :: Maybe [Text]     -- multi-agent (parallel)
-  , phRequire       :: Maybe Text       -- aggregation requirement
-  , phFreshInstance  :: Maybe Bool
+  , phRequire       :: Maybe Text       -- aggregation requirement ("all_passed", "majority_passed", "any_passed")
+  , phFreshInstance :: Maybe Bool
+  , phGates         :: [Text]           -- gate names to evaluate after this phase
   } deriving (Show)
 
 -- | A gate definition.
 data Gate = Gate
   { gName    :: Text
-  , gType    :: Text        -- "shell" | "predicate"
+  , gType    :: Text        -- "shell" | "llm_judge" | "predicate"
   , gCommand :: Maybe Text  -- for shell gates
   , gExpr    :: Maybe Text  -- for predicate gates
   } deriving (Show)
@@ -105,12 +106,14 @@ instance FromValue Phase where
     agents  <- optKeyOf "agents" (listOf (\_ v -> fromValue v))
     req     <- optKey "require"
     fresh   <- optKey "fresh_instance"
+    gates   <- optKeyOf "gates" (listOf (\_ v -> fromValue v))
     pure Phase
-      { phName         = name
-      , phAgent        = agent
-      , phAgents       = agents
-      , phRequire      = req
+      { phName          = name
+      , phAgent         = agent
+      , phAgents        = agents
+      , phRequire       = req
       , phFreshInstance = fresh
+      , phGates         = maybe [] id gates
       }
 
 instance FromValue Gate where

@@ -1,0 +1,25 @@
+# parallel-test.toml
+# Minimal test spec for parallel fan-out/fan-in.
+# Tests that phAgents runs multiple agents concurrently and aggregates results.
+
+agents_dir = "./examples/parallel-test/agents"
+
+[project]
+name        = "parallel-test"
+description = "Parallel fan-out test — runs 3 reviewers concurrently then synthesizes"
+
+# Phase 1: single architect produces a plan
+[[phases]]
+name  = "plan"
+agent = "architect"
+
+# Phase 2: 3 reviewers evaluate in parallel (fan-out)
+[[phases]]
+name    = "review"
+agents  = ["security-reviewer", "performance-reviewer", "completeness-reviewer"]
+require = "all_passed"
+
+# Phase 3: synthesizer aggregates all reviews
+[[phases]]
+name  = "synthesize"
+agent = "synthesizer"
