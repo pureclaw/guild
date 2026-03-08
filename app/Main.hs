@@ -12,7 +12,7 @@ import Data.UUID (toString)
 import Data.Time.Clock (getCurrentTime)
 import Data.Time.Format (formatTime, defaultTimeLocale)
 
-import Guild.Types (TeamSpec(..), ProjectConfig(..), Phase(..))
+import Guild.Types (TeamSpec(..), ProjectConfig(..), Phase(..), Checkpoint(..))
 import Guild.Parser (parseTeamSpec)
 import Guild.Resolver (resolveAgents, expandTilde)
 import Guild.Generator (generateProject)
@@ -31,6 +31,7 @@ data Command
   | Resume FilePath FilePath        -- spec, run-dir to resume
   | RunsList
   | AgentsList FilePath             -- spec; list agents in agents_dir
+  | Graph FilePath                  -- spec; print ASCII pipeline graph
   deriving (Show)
 
 parseCommand :: Parser Command
@@ -41,6 +42,7 @@ parseCommand = subparser
  <> command "resume"   (info resumeOpts   (progDesc "Resume a paused pipeline run"))
  <> command "runs"     (info runsOpts     (progDesc "Manage pipeline runs"))
  <> command "agents"   (info agentsOpts   (progDesc "Manage agent library"))
+ <> command "graph"    (info graphOpts    (progDesc "Print ASCII pipeline graph"))
   )
 
 initOpts :: Parser Command
@@ -103,6 +105,13 @@ agentsListOpts = AgentsList
      <> help "Path to team.toml spec (to locate agents_dir)"
       )
 
+graphOpts :: Parser Command
+graphOpts = Graph
+  <$> argument str
+      ( metavar "SPEC"
+     <> help "Path to team.toml spec to visualize"
+      )
+
 opts :: ParserInfo Command
 opts = info (parseCommand <**> helper)
   ( fullDesc
@@ -125,6 +134,7 @@ main = do
     Resume specPath runDir   -> doResume specPath runDir
     RunsList                 -> runRunsList
     AgentsList specPath      -> runAgentsList specPath
+    Graph specPath           -> runGraph specPath
 
 -- ---------------------------------------------------------------------------
 -- init
@@ -348,6 +358,76 @@ resolveAgentsDir cwd agentsDir = do
 isAbsolutePath :: FilePath -> Bool
 isAbsolutePath ('/':_) = True
 isAbsolutePath _       = False
+
+-- ---------------------------------------------------------------------------
+-- graph
+-- ---------------------------------------------------------------------------
+
+runGraph :: FilePath -> IO ()
+runGraph specPath = do
+  absSpec <- makeAbsolute specPath
+  result  <- parseTeamSpec absSpec
+  case result of
+    Left err -> do
+      putStrLn "Error parsing team spec:"
+      putStrLn err
+    Right spec -> do
+      let name   = T.unpack (pcName (tsProject spec))
+          phases = tsPhases spec
+          cps    = tsCheckpoints spec
+          width  = 60
+
+      putStrLn ""
+      putStrLn $ "Pipeline: " ++ name
+      putStrLn $ replicate width '━'
+      putStrLn ""
+      mapM_ (printPhaseNode cps width) (zip phases [0..])
+      putStrLn ""
+
+printPhaseNode :: [Checkpoint] -> Int -> (Phase, Int) -> IO ()
+printPhaseNode checkpoints width (phase, idx) = do
+  let name  = phName phase
+      gates = phGates phase
+
+  -- Connector from previous phase (except first)
+  if idx > 0
+    then do
+      putStrLn "       │"
+      putStrLn "       ▼"
+    else pure ()
+
+  -- Phase box
+  case phAgents phase of
+    Just agentList -> do
+      -- Parallel phase
+      let agentCount = length agentList
+          reqStr = maybe "" (\r -> " (require: " ++ T.unpack r ++ ")") (phRequire phase)
+      putStrLn $ "  ┌─ " ++ T.unpack name ++ "  [parallel × " ++ show agentCount ++ "]" ++ reqStr
+      mapM_ (\(agent, i) ->
+        putStrLn $ "  " ++ (if i == agentCount then "└─" else "├─")
+                ++ " " ++ T.unpack agent
+        ) (zip agentList [1..])
+    Nothing -> do
+      -- Single-agent phase
+      let agentStr = maybe (T.unpack name) T.unpack (phAgent phase)
+      putStrLn $ "  [ " ++ T.unpack name ++ " ]  →  " ++ agentStr
+
+  -- Gates on this phase
+  mapM_ (\g -> putStrLn $ "       🔒 gate: " ++ T.unpack g) gates
+
+  -- Checkpoint after this phase
+  case findCp checkpoints name of
+    Just cp -> do
+      putStrLn "       │"
+      let desc = take (width - 15) (T.unpack (cpDescription cp))
+      putStrLn $ "       ⏸  CHECKPOINT"
+      putStrLn $ "          " ++ desc ++ (if length desc < length (T.unpack (cpDescription cp)) then "..." else "")
+    Nothing -> pure ()
+
+findCp :: [Checkpoint] -> T.Text -> Maybe Checkpoint
+findCp cps name = case filter (\cp -> cpAfter cp == name) cps of
+  (c:_) -> Just c
+  []    -> Nothing
 
 -- ---------------------------------------------------------------------------
 -- agents list
