@@ -10,13 +10,16 @@ module Guild.Runtime.Machine
 
 import Control.Concurrent.Async (mapConcurrently)
 import Data.List (find)
+import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
+import System.Directory (doesFileExist)
 import System.Exit (ExitCode(..))
+import System.FilePath ((</>))
 import System.Process (readProcessWithExitCode)
 
-import Guild.Types (TeamSpec(..), Phase(..), Checkpoint(..))
+import Guild.Types (TeamSpec(..), Phase(..), Gate(..), Checkpoint(..))
 import Guild.Runtime.SlotStore (SlotStore, openSlotStore, pushSlot, pullSlot)
 import Guild.Runtime.Beads (BeadsContext(..))
 import Guild.Runtime.Gate (evaluateGates)
@@ -90,12 +93,13 @@ parsePairs = concatMap parseLine
 -- ---------------------------------------------------------------------------
 
 -- | Run a full pipeline from the beginning.
-runPipeline :: TeamSpec -> FilePath -> BeadsContext -> IO PipelineResult
-runPipeline spec runDir beads = runPipelineFrom spec runDir beads 0
+-- agentsBaseDir: absolute path to the agents directory (for loading SOUL.md).
+runPipeline :: TeamSpec -> FilePath -> BeadsContext -> FilePath -> IO PipelineResult
+runPipeline spec runDir beads agentsBaseDir = runPipelineFrom spec runDir beads agentsBaseDir 0
 
 -- | Run a pipeline starting at the given 0-based phase index (for resume).
-runPipelineFrom :: TeamSpec -> FilePath -> BeadsContext -> Int -> IO PipelineResult
-runPipelineFrom spec runDir beads startIdx = do
+runPipelineFrom :: TeamSpec -> FilePath -> BeadsContext -> FilePath -> Int -> IO PipelineResult
+runPipelineFrom spec runDir beads agentsBaseDir startIdx = do
   let dbPath = runDir ++ "/slots.db"
   store <- openSlotStore dbPath
   let allPhases = tsPhases spec
@@ -108,7 +112,7 @@ runPipelineFrom spec runDir beads startIdx = do
     go  store  all (phase:rest)   checkpts  gates  idx  acc = do
 
       -- Run phase (single-agent or parallel multi-agent)
-      output <- runPhase store all beads phase
+      output <- runPhase store all beads agentsBaseDir phase
 
       let acc' = if T.null acc then output else acc <> "\n\n" <> output
 
@@ -144,19 +148,19 @@ findCheckpoint cps phaseName = find ((== phaseName) . cpAfter) cps
 -- ---------------------------------------------------------------------------
 
 -- | Execute a phase. Dispatches to parallel or single-agent execution.
-runPhase :: SlotStore -> [Phase] -> BeadsContext -> Phase -> IO Text
-runPhase store allPhases beads phase =
+runPhase :: SlotStore -> [Phase] -> BeadsContext -> FilePath -> Phase -> IO Text
+runPhase store allPhases beads agentsDir phase =
   case phAgents phase of
-    Just agentList -> runParallelPhase store allPhases beads phase agentList
-    Nothing        -> runSingleAgentPhase store allPhases beads phase
+    Just agentList -> runParallelPhase store allPhases beads agentsDir phase agentList
+    Nothing        -> runSingleAgentPhase store allPhases beads agentsDir phase
 
 -- ---------------------------------------------------------------------------
 -- Parallel fan-out: run multiple agents concurrently, then aggregate
 -- ---------------------------------------------------------------------------
 
 -- | Run a multi-agent phase: fan out to all agents in parallel, fan in by aggregating.
-runParallelPhase :: SlotStore -> [Phase] -> BeadsContext -> Phase -> [Text] -> IO Text
-runParallelPhase store allPhases beads phase agentList = do
+runParallelPhase :: SlotStore -> [Phase] -> BeadsContext -> FilePath -> Phase -> [Text] -> IO Text
+runParallelPhase store allPhases beads agentsDir phase agentList = do
   let name = phName phase
   putStrLn $ "[guild] Running parallel phase: " ++ T.unpack name
   putStrLn $ "[guild]   Agents (" ++ show (length agentList) ++ "): "
@@ -165,8 +169,11 @@ runParallelPhase store allPhases beads phase agentList = do
   context <- gatherContext store allPhases phase
   let prompt = buildPrompt name (beadsText beads) context
 
-  -- Fan out: run all agents concurrently
-  results <- mapConcurrently (\agent -> runAgent agent prompt) agentList
+  -- Fan out: run all agents concurrently, each with their own SOUL.md
+  results <- mapConcurrently (\agent -> do
+    mSoul <- loadSoulMd agentsDir agent
+    runAgent agent prompt mSoul
+    ) agentList
 
   -- Store individual results per-agent slot
   let indexedResults = zip agentList results
@@ -200,10 +207,10 @@ aggregateResults mRequire results =
 -- ---------------------------------------------------------------------------
 
 -- | Execute a single-agent phase, returning its output text.
-runSingleAgentPhase :: SlotStore -> [Phase] -> BeadsContext -> Phase -> IO Text
-runSingleAgentPhase store allPhases beads phase = do
+runSingleAgentPhase :: SlotStore -> [Phase] -> BeadsContext -> FilePath -> Phase -> IO Text
+runSingleAgentPhase store allPhases beads agentsDir phase = do
   let name  = phName phase
-      agent = maybe name id (phAgent phase)
+      agent = fromMaybe name (phAgent phase)
 
   putStrLn $ "[guild] Running phase: " ++ T.unpack name
   putStrLn $ "[guild]   Agent: " ++ T.unpack agent
@@ -211,7 +218,8 @@ runSingleAgentPhase store allPhases beads phase = do
   context <- gatherContext store allPhases phase
   let prompt = buildPrompt name (beadsText beads) context
 
-  output <- runAgent agent prompt
+  mSoul <- loadSoulMd agentsDir agent
+  output <- runAgent agent prompt mSoul
   pushSlot store name name output
   putStrLn $ "[guild]   Phase '" ++ T.unpack name ++ "' complete ("
           ++ show (T.length output) ++ " chars)."
@@ -221,14 +229,25 @@ runSingleAgentPhase store allPhases beads phase = do
 -- Agent invocation (shared by single and parallel)
 -- ---------------------------------------------------------------------------
 
--- | Invoke claude with a prompt and return its output.
--- TODO: use agentName to load SOUL.md as system prompt and config.yaml for model/tools
-runAgent :: Text -> Text -> IO Text
-runAgent _agentName prompt = do
-  (exitCode, stdout, stderr) <- readProcessWithExitCode
-    "claude"
-    ["--dangerously-skip-permissions", "-p", T.unpack prompt]
-    ""
+-- | Load an agent's SOUL.md system prompt, if present.
+loadSoulMd :: FilePath -> Text -> IO (Maybe Text)
+loadSoulMd agentsDir agentName = do
+  let soulPath = agentsDir </> T.unpack agentName </> "SOUL.md"
+  exists <- doesFileExist soulPath
+  if exists
+    then Just <$> TIO.readFile soulPath
+    else pure Nothing
+
+-- | Invoke claude with a task prompt and optional system prompt (SOUL.md).
+-- When SOUL.md is present, it becomes the system prompt (agent persona).
+-- The task prompt (phase context + task description) is the user turn.
+runAgent :: Text -> Text -> Maybe Text -> IO Text
+runAgent _agentName prompt mSoulMd = do
+  let baseArgs = ["--dangerously-skip-permissions", "-p", T.unpack prompt]
+      args = case mSoulMd of
+        Just soul -> baseArgs ++ ["--system-prompt", T.unpack soul]
+        Nothing   -> baseArgs
+  (exitCode, stdout, stderr) <- readProcessWithExitCode "claude" args ""
   case exitCode of
     ExitSuccess ->
       pure (T.pack stdout)

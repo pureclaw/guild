@@ -14,7 +14,7 @@ import Data.Time.Format (formatTime, defaultTimeLocale)
 
 import Guild.Types (TeamSpec(..), ProjectConfig(..), Phase(..))
 import Guild.Parser (parseTeamSpec)
-import Guild.Resolver (resolveAgents)
+import Guild.Resolver (resolveAgents, expandTilde)
 import Guild.Generator (generateProject)
 import Guild.Runtime.Machine (PipelineResult(..), runPipeline, runPipelineFrom,
                                readCheckpoint, CheckpointState(..))
@@ -230,10 +230,13 @@ runRun specPath = do
       putStrLn $ "Checkpoints: " ++ show (length (tsCheckpoints spec))
       putStrLn ""
 
+      agentsBaseDir <- resolveAgentsDir cwd (tsAgentsDir spec)
+
       beads <- primeContext cwd
       putStrLn "[beads] Knowledge context primed."
+      putStrLn $ "[guild] Agents dir: " ++ agentsBaseDir
 
-      result' <- runPipeline spec runDir beads
+      result' <- runPipeline spec runDir beads agentsBaseDir
       handleResult cwd timestamp spec result'
 
 -- ---------------------------------------------------------------------------
@@ -272,10 +275,12 @@ doResume specPath runDir = do
               let timestamp = formatTime defaultTimeLocale "%Y-%m-%dT%H:%M:%SZ" now
               cwd <- getCurrentDirectory
 
+              agentsBaseDir <- resolveAgentsDir cwd (tsAgentsDir spec)
+
               beads <- primeContext cwd
               putStrLn "[beads] Knowledge context primed."
 
-              pResult <- runPipelineFrom spec absRunDir beads (csNextIdx cs)
+              pResult <- runPipelineFrom spec absRunDir beads agentsBaseDir (csNextIdx cs)
               handleResult cwd timestamp spec pResult
 
 -- ---------------------------------------------------------------------------
@@ -328,6 +333,23 @@ runRunsList = do
           mapM_ (showRun runsBase) dirs
 
 -- ---------------------------------------------------------------------------
+-- Shared helpers
+-- ---------------------------------------------------------------------------
+
+-- | Resolve an agents_dir from a spec to an absolute path.
+-- agents_dir is treated as relative to CWD if not absolute or ~-prefixed.
+resolveAgentsDir :: FilePath -> FilePath -> IO FilePath
+resolveAgentsDir cwd agentsDir = do
+  expanded <- expandTilde agentsDir
+  if isAbsolutePath expanded
+    then pure expanded
+    else pure (cwd </> expanded)
+
+isAbsolutePath :: FilePath -> Bool
+isAbsolutePath ('/':_) = True
+isAbsolutePath _       = False
+
+-- ---------------------------------------------------------------------------
 -- agents list
 -- ---------------------------------------------------------------------------
 
@@ -342,8 +364,7 @@ runAgentsList specPath = do
       putStrLn "Error parsing team spec:"
       putStrLn err
     Right spec -> do
-      -- agents_dir is resolved relative to CWD (where guild is invoked), not the spec file
-      let agentsDir = cwd </> tsAgentsDir spec
+      agentsDir <- resolveAgentsDir cwd (tsAgentsDir spec)
       exists <- doesDirectoryExist agentsDir
       if not exists
         then putStrLn $ "agents_dir not found: " ++ agentsDir
